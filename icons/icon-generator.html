@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Icon Generator</title>
+<body style="background:#0b1220;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont;">
+<h3>아이콘 생성기</h3>
+<p>버튼을 누르면 192px, 512px PNG가 다운로드됩니다.</p>
+<button id="make">아이콘 만들기</button>
+<canvas id="cv" width="512" height="512" style="display:none"></canvas>
+<script>
+  const make = (size)=>{
+    const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+    cv.width = size; cv.height = size;
+
+    // 배경
+    ctx.fillStyle = "#111827"; ctx.fillRect(0,0,size,size);
+
+    // 원 배지
+    ctx.beginPath();
+    ctx.arc(size/2, size/2, size*0.42, 0, Math.PI*2);
+    ctx.fillStyle = "#2563eb";
+    ctx.fill();
+
+    // 이모지(⏱️) 텍스트
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = `${Math.floor(size*0.45)}px Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif`;
+    ctx.fillText("⏱️", size/2, size/2);
+
+    const a = document.createElement("a");
+    a.download = `icon-${size}.png`;
+    a.href = cv.toDataURL("image/png");
+    a.click();
+  };
+  document.getElementById("make").onclick = ()=>{
+    make(192); setTimeout(()=>make(512), 100);
+  };
+</script>

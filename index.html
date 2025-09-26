@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pomotime ⏱️</title>
+  <meta name="theme-color" content="#111827" />
+  <link rel="manifest" href="manifest.json">
+  <style>
+    html,body{height:100%}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#0b1220;color:#e5e7eb;display:flex;align-items:center;justify-content:center}
+    .card{width:min(720px,92vw);background:#111827;border:1px solid #1f2937;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.4);padding:24px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    h1{margin:0 0 8px;font-size:20px}
+    select,input,button{background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:10px;padding:10px 12px;font-size:14px}
+    button{cursor:pointer}
+    button.primary{border-color:#2563eb}
+    .timer{display:flex;flex-direction:column;align-items:center;gap:10px;margin:18px 0}
+    .time{font-size:64px;letter-spacing:1px;font-variant-numeric:tabular-nums}
+    .phase{padding:4px 10px;border-radius:999px;background:#111827;border:1px solid #374151;font-size:12px;opacity:.9}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+    .stats{font-size:12px;opacity:.9;margin-top:10px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .hint{font-size:12px;opacity:.7}
+    .badge{font-size:12px;padding:4px 8px;border:1px solid #374151;border-radius:999px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Pomotime ⏱️ <span class="badge" id="presetBadge">Pomodoro</span></h1>
+
+    <div class="row">
+      <select id="preset">
+        <option value="pomodoro">Pomodoro (25/5, 4회 후 15)</option>
+        <option value="52-17">52/17 Rule</option>
+        <option value="ultradian">Ultradian (90/20)</option>
+        <option value="90-30">90/30 Split</option>
+        <option value="custom">Custom</option>
+      </select>
+      <button id="notifyBtn">알림 허용</button>
+      <button id="resetStatsBtn">통계 초기화</button>
+    </div>
+
+    <div class="grid" id="customGrid" style="display:none; margin-top:12px;">
+      <label>집중(분)
+        <input id="focusMin" type="number" min="1" value="25" />
+      </label>
+      <label>짧은 휴식(분)
+        <input id="shortMin" type="number" min="1" value="5" />
+      </label>
+      <label>긴 휴식(분)
+        <input id="longMin" type="number" min="1" value="15" />
+      </label>
+      <label>긴 휴식 주기(회)
+        <input id="longEvery" type="number" min="0" value="4" />
+      </label>
+    </div>
+
+    <div class="timer">
+      <div class="phase" id="phase">집중</div>
+      <div class="time" id="time">25:00</div>
+      <div class="controls">
+        <button class="primary" id="startPauseBtn">시작</button>
+        <button id="skipBtn">다음 단계</button>
+        <button id="resetBtn">리셋</button>
+      </div>
+      <div class="stats" id="stats"></div>
+      <div class="hint">🔔 단계 전환 시 알림/소리. 탭 타이틀에 남은 시간이 표시됩니다. (PWA 설치 가능)</div>
+    </div>
+  </div>
+
+  <script>
+    // --------- 상태 ----------
+    const el = (id)=>document.getElementById(id);
+    const timeEl = el("time"), phaseEl = el("phase"), startBtn = el("startPauseBtn");
+    const skipBtn = el("skipBtn"), resetBtn = el("resetBtn"), presetSel = el("preset");
+    const badge = el("presetBadge"), customGrid = el("customGrid"), statsEl = el("stats");
+    const notifyBtn = el("notifyBtn"), resetStatsBtn = el("resetStatsBtn");
+
+    // 5 프리셋
+    const defaultPresets = {
+      pomodoro: {focus:25, short:5, long:15, longEvery:4},     // 긴 휴식 4회마다
+      "52-17":  {focus:52, short:17, long:17, longEvery:0},    // 긴 휴식 없음(=항상 짧은 휴식)
+      ultradian:{focus:90, short:20, long:20, longEvery:0},
+      "90-30":  {focus:90, short:30, long:30, longEvery:0},
+    };
+
+    let settings = JSON.parse(localStorage.getItem("pt_settings")||"null") || {
+      preset:"pomodoro", custom:{focus:25, short:5, long:15, longEvery:4}
+    };
+    let stats = JSON.parse(localStorage.getItem("pt_stats")||"null") || {
+      sessionsCompleted:0, focusedSec:0
+    };
+
+    let running=false, phase="focus", remainSec=0, cycleCount=0, timerId=null, lastTick=Date.now();
+
+    function getActiveDurations(){
+      const p = settings.preset;
+      if(p==="custom") return settings.custom;
+      return defaultPresets[p];
+    }
+
+    function setPresetUI(){
+      presetSel.value = settings.preset;
+      badge.textContent = presetSel.options[presetSel.selectedIndex].text;
+      customGrid.style.display = settings.preset==="custom" ? "grid" : "none";
+      const {focus,short,long,longEvery} = getActiveDurations();
+      if(settings.preset==="custom"){
+        el("focusMin").value = focus;
+        el("shortMin").value = short;
+        el("longMin").value = long;
+        el("longEvery").value = longEvery;
+      }
+    }
+
+    function fmt(sec){
+      const m = Math.floor(sec/60), s = sec%60;
+      return `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+    }
+
+    function setPhase(newPhase, fromSkip=false){
+      phase = newPhase;
+      phaseEl.textContent = phase==="focus" ? "집중" : (phase==="short" ? "짧은 휴식" : "긴 휴식");
+      const d = getActiveDurations();
+      if(phase==="focus") remainSec = d.focus*60;
+      if(phase==="short") remainSec = d.short*60;
+      if(phase==="long")  remainSec = d.long*60;
+
+      if(!fromSkip) notify(`⏱️ ${phaseEl.textContent} 시작`, `${fmt(remainSec)} 동안 진행됩니다.`);
+      beep();
+      render();
+    }
+
+    function nextPhase(){
+      if(phase==="focus"){
+        cycleCount++;
+        const d = getActiveDurations();
+        if(d.longEvery>1 && cycleCount % d.longEvery === 0) setPhase("long");
+        else setPhase("short");
+      } else {
+        setPhase("focus");
+      }
+    }
+
+    function render(){
+      timeEl.textContent = fmt(remainSec);
+      document.title = `${fmt(remainSec)} • ${phaseEl.textContent} – Pomotime`;
+      const minutes = Math.floor(stats.focusedSec/60);
+      statsEl.textContent = `완료 세션: ${stats.sessionsCompleted} · 누적 집중: ${minutes}분`;
+      startBtn.textContent = running ? "일시정지" : "시작";
+    }
+
+    function tick(){
+      if(!running) return;
+      const now = Date.now();
+      const elapsed = Math.floor((now - lastTick)/1000);
+      if(elapsed > 0){
+        lastTick = now;
+        remainSec = Math.max(0, remainSec - elapsed);
+        if(phase==="focus") stats.focusedSec += elapsed;
+        if(remainSec<=0){
+          if(phase==="focus") stats.sessionsCompleted++;
+          localStorage.setItem("pt_stats", JSON.stringify(stats));
+          notify("단계 완료", `${phaseEl.textContent} 종료!`);
+          beep();
+          nextPhase();
+        }
+        render();
+      }
+    }
+
+    function start(){
+      if(running) return;
+      running=true; lastTick=Date.now();
+      if(!timerId) timerId = setInterval(tick, 250);
+      render();
+    }
+    function pause(){ running=false; render(); }
+    function reset(){ running=false; cycleCount=0; setPhase("focus"); render(); }
+    function skip(){ nextPhase(); notify("다음 단계로 이동", phaseEl.textContent); render(); }
+
+    function notify(title, body){
+      if("Notification" in window){
+        if(Notification.permission==="granted"){ new Notification(title,{body}); }
+      }
+    }
+    function beep(){
+      try{
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(); const g = ctx.createGain();
+        o.type="sine"; o.frequency.value=880; g.gain.value=0.02;
+        o.connect(g); g.connect(ctx.destination); o.start();
+        setTimeout(()=>{o.stop();ctx.close();},180);
+      }catch(e){}
+    }
+
+    // 이벤트
+    startBtn.onclick = ()=> running ? pause() : start();
+    resetBtn.onclick = reset;
+    skipBtn.onclick = ()=> skip();
+
+    presetSel.onchange = ()=>{
+      settings.preset = presetSel.value;
+      localStorage.setItem("pt_settings", JSON.stringify(settings));
+      setPresetUI(); reset();
+    };
+
+    ["focusMin","shortMin","longMin","longEvery"].forEach(id=>{
+      const input = el(id);
+      input && (input.oninput = ()=>{
+        settings.custom = {
+          focus: +el("focusMin").value || 25,
+          short: +el("shortMin").value || 5,
+          long:  +el("longMin").value  || 15,
+          longEvery: Math.max(0, +el("longEvery").value || 0),
+        };
+        localStorage.setItem("pt_settings", JSON.stringify(settings));
+        if(settings.preset==="custom") reset();
+      });
+    });
+
+    notifyBtn.onclick = async ()=>{
+      if(!("Notification" in window)) return alert("이 브라우저는 알림을 지원하지 않음");
+      const perm = await Notification.requestPermission();
+      alert(perm==="granted" ? "알림 허용됨" : "알림 거부됨");
+    };
+
+    resetStatsBtn.onclick = ()=>{
+      if(confirm("통계를 초기화할까요?")){
+        stats = {sessionsCompleted:0, focusedSec:0};
+        localStorage.setItem("pt_stats", JSON.stringify(stats));
+        render();
+      }
+    };
+
+    // PWA SW 등록
+    if("serviceWorker" in navigator){
+      window.addEventListener("load", ()=>{
+        navigator.serviceWorker.register("service-worker.js").catch(()=>{});
+      });
+    }
+
+    // 초기화
+    setPresetUI();
+    setPhase("focus");
+    render();
+  </script>
+</body>
+</html>
